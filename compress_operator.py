@@ -30,33 +30,48 @@ class BC_OT_ConfirmOverwrite(Operator):
             row.prop(item, "overwrite", text=item.name)
 
     def execute(self, context):
+        context.window_manager.bc_skip_conflict_dialog = True
         return bpy.ops.bc.compress_textures('EXEC_DEFAULT')
 
 
 class BC_OT_CompressTextures(Operator):
     bl_idname = "bc.compress_textures"
     bl_label = "Сжать текстуры"
-    bl_description = "Сжимает выбранные текстуры активного объекта в .DDS с помощью texconv.exe"
+    bl_description = "Сжимает выбранные текстуры в .DDS с помощью texconv.exe"
 
     def invoke(self, context, event):
-        props = context.scene.bc_compression_props
-        obj = context.object
+        scene = context.scene
+        props = scene.bc_compression_props
 
-        if not obj or not obj.active_material:
-            self.report({'WARNING'}, "Нет активного объекта или материала")
-            return {'CANCELLED'}
+        print("=== BC_OT_CompressTextures invoke ===")
+        print(f"use_batch_selection: {scene.use_batch_selection}")
+
+        if not scene.use_batch_selection:
+            obj = context.object
+            print(f"obj: {obj}")
+            if not obj or not obj.active_material:
+                self.report({'ERROR'}, "Нет активного объекта или материала")
+                return {'CANCELLED'}
+
+        return self.execute(context)
+
+    def execute(self, context):
+        scene = context.scene
+        props = scene.bc_compression_props
+        wm = context.window_manager
+
+        print("=== BC_OT_CompressTextures execute ===")
+        print(f"use_batch_selection: {scene.use_batch_selection}")
+
+        if not scene.use_batch_selection:
+            obj = context.object
+            if not obj or not obj.active_material:
+                self.report({'ERROR'}, "Нет активного объекта или материала")
+                return {'CANCELLED'}
 
         if not props.texture_list:
-            mat = obj.active_material
-            image_nodes = [n for n in mat.node_tree.nodes if n.type == 'TEX_IMAGE']
-            for node in image_nodes:
-                image = node.image
-                if not image or not image.filepath:
-                    continue
-                item = props.texture_list.add()
-                item.name = os.path.basename(image.filepath)
-                item.filepath = bpy.path.abspath(image.filepath_raw)
-                item.use = True
+            self.report({'ERROR'}, "Нет выбранных текстур")
+            return {'CANCELLED'}
 
         selected = [item for item in props.texture_list if item.use]
         if not selected:
@@ -67,9 +82,16 @@ class BC_OT_CompressTextures(Operator):
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
 
-        wm = context.window_manager
-        if hasattr(wm, "bc_conflicts"):
-            wm.bc_conflicts.clear()
+        # Флаг: пропустить окно подтверждения перезаписи, если оно уже было
+        if getattr(wm, "bc_skip_conflict_dialog", False):
+            wm.bc_skip_conflict_dialog = False  # сбросим для будущих вызовов
+            return self._run_compression(context, selected, output_dir)
+
+        # Проверка конфликтов
+        if not hasattr(wm, "bc_conflicts"):
+            wm.bc_conflicts = []
+
+        wm.bc_conflicts.clear()
 
         for item in selected:
             dds_name = os.path.splitext(item.name)[0] + ".DDS"
@@ -83,18 +105,10 @@ class BC_OT_CompressTextures(Operator):
         if len(wm.bc_conflicts) > 0:
             return bpy.ops.bc.confirm_overwrite('INVOKE_DEFAULT')
         else:
-            return self.execute(context)
+            return self._run_compression(context, selected, output_dir)
 
-    def execute(self, context):
+    def _run_compression(self, context, selected, output_dir):
         props = context.scene.bc_compression_props
-        obj = context.object
-        if not obj or not obj.active_material:
-            self.report({'WARNING'}, "Нет активного объекта или материала")
-            return {'CANCELLED'}
-
-        mat = obj.active_material
-        image_nodes = [n for n in mat.node_tree.nodes if n.type == 'TEX_IMAGE']
-
         addon_dir = os.path.dirname(os.path.abspath(__file__))
         texconv_path = os.path.join(addon_dir, "bin", "texconv.exe")
 
@@ -102,65 +116,72 @@ class BC_OT_CompressTextures(Operator):
             self.report({'ERROR'}, "texconv.exe не найден")
             return {'CANCELLED'}
 
-        output_dir = bpy.path.abspath(props.output_path.strip()) if props.output_path.strip() else os.path.join(os.path.dirname(bpy.data.filepath), "DDS_Output")
-        if not os.path.exists(output_dir):
-            os.makedirs(output_dir)
+        conflict_overwrite = {
+            item.name: item.overwrite for item in context.window_manager.bc_conflicts
+        } if hasattr(context.window_manager, "bc_conflicts") else {}
 
-        selected_textures = {item.filepath for item in props.texture_list if item.use}
+        errors = []
 
-        wm = context.window_manager
-        conflict_overwrite = {}
-        if hasattr(wm, "bc_conflicts"):
-            conflict_overwrite = {item.name: item.overwrite for item in wm.bc_conflicts}
+        for item in selected:
+            input_path = bpy.path.abspath(item.filepath)
 
-        for node in image_nodes:
-            image = node.image
-            if not image or not image.filepath:
+            if not os.path.isfile(input_path):
+                errors.append(f"Файл не найден: {input_path}")
                 continue
 
-            input_path = bpy.path.abspath(image.filepath_raw)
-            if input_path not in selected_textures:
-                continue
-
-            base_name = os.path.splitext(os.path.basename(image.filepath))[0]
+            base_name = os.path.splitext(os.path.basename(input_path))[0]
             dds_name = base_name + ".DDS"
             output_file = os.path.join(output_dir, dds_name)
 
             if os.path.exists(output_file):
                 if dds_name in conflict_overwrite and not conflict_overwrite[dds_name]:
-                    self.report({'INFO'}, f"Пропущено: {dds_name} (перезапись не разрешена)")
+                    print(f"[BC Compressor] Пропущено: {dds_name} (перезапись не разрешена)")
                     continue
                 try:
                     os.remove(output_file)
                 except Exception:
-                    self.report({'WARNING'}, f"Не удалось удалить: {output_file}")
+                    errors.append(f"Не удалось удалить: {output_file}")
                     continue
 
-            format_to_use = props.compression_format
+            # Определяем формат
+            compression_format = props.compression_format
             if props.auto_format:
-                format_to_use = self.get_format_from_connection(mat, node)
+                lname = item.name.lower()
+                if "normal" in lname:
+                    compression_format = "BC5_UNORM"
+                elif any(k in lname for k in ["roughness", "metallic", "ao", "height", "displacement", "specular"]):
+                    compression_format = "BC1_UNORM"
+                elif "emissive" in lname or "emission" in lname:
+                    compression_format = "BC6H_UF16"
+                elif any(k in lname for k in ["basecolor", "albedo", "diffuse"]):
+                    compression_format = "BC7_UNORM"
+                else:
+                    compression_format = "BC7_UNORM"
 
-            args = [
-                texconv_path,
-                "-f", format_to_use,
-                "-o", output_dir
-            ]
-
-            if not props.auto_format and format_to_use in {"BC7_UNORM", "BC6H_UF16"}:
-                args += ["-bc", props.compression_quality]
-            elif props.auto_format and format_to_use == "BC7_UNORM":
-                args += ["-bc", "q"]
+            args = [texconv_path, "-f", compression_format, "-o", output_dir]
 
             if not props.generate_mipmaps:
                 args += ["-m", "1"]
 
+            if not props.auto_format and compression_format in {"BC7_UNORM", "BC6H_UF16"}:
+                args += ["-bc", props.compression_quality]
+            elif props.auto_format and compression_format == "BC7_UNORM":
+                args += ["-bc", "q"]
+
             args.append(input_path)
 
+            print(f"[BC Compressor] Запуск: {' '.join(args)}")
             try:
                 subprocess.run(args, check=True)
-                self.report({'INFO'}, f"Сжато: {dds_name}")
+                print(f"[BC Compressor] Сжато: {dds_name}")
             except subprocess.CalledProcessError as e:
-                self.report({'ERROR'}, f"Ошибка при сжатии {image.name}: {e}")
+                errors.append(f"Ошибка при сжатии {item.name}: {e}")
+
+        if errors:
+            for err in errors:
+                print("[BC Compressor]", err)
+            self.report({'WARNING'}, "Некоторые текстуры не были сжаты. См. консоль.")
+            return {'CANCELLED'}
 
         self.report({'INFO'}, "Сжатие завершено")
         return {'FINISHED'}

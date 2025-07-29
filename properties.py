@@ -7,10 +7,12 @@ from bpy.props import (
     CollectionProperty,
 )
 
+
 class BC_TextureItem(bpy.types.PropertyGroup):
     name: StringProperty()
     filepath: StringProperty()
     use: BoolProperty(name="Выбирать", default=True)
+
 
 class BC_CompressionProperties(bpy.types.PropertyGroup):
     compression_format: EnumProperty(
@@ -55,8 +57,9 @@ class BC_CompressionProperties(bpy.types.PropertyGroup):
     )
 
     texture_list: CollectionProperty(type=BC_TextureItem)
-
     last_obj_name: StringProperty(default="")
+
+    use_batch_selection: BoolProperty(default=False)
 
 
 def register():
@@ -66,6 +69,7 @@ def register():
 
 
 def unregister():
-    del bpy.types.Scene.bc_compression_props
+    if hasattr(bpy.types.Scene, "bc_compression_props"):
+        del bpy.types.Scene.bc_compression_props
     bpy.utils.unregister_class(BC_CompressionProperties)
     bpy.utils.unregister_class(BC_TextureItem)

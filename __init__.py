@@ -14,24 +14,37 @@ from . import compress_operator
 from . import properties
 from . import panel
 from . import compress_downloader
+from . import batch_select_operator
+from bpy.props import CollectionProperty, BoolProperty
+from .compress_operator import FileConflictItem
 
 
 def register():
     properties.register()
     compress_operator.register()
     panel.register()
+    batch_select_operator.register() 
 
-    bpy.types.WindowManager.bc_conflicts = bpy.props.CollectionProperty(type=compress_operator.FileConflictItem)
+    bpy.types.WindowManager.bc_conflicts = CollectionProperty(type=FileConflictItem)
+    bpy.types.WindowManager.bc_skip_conflict_dialog = BoolProperty(default=False)
+
+    bpy.types.Scene.use_batch_selection = bpy.props.BoolProperty(
+        name="Пакетная обработка активна",
+        default=False
+    )
 
     addon_dir = os.path.dirname(os.path.abspath(__file__))
     if not compress_downloader.download_and_extract_texconv(addon_dir):
         print("[BC Compressor] texconv.exe не удалось загрузить. Проверьте подключение к интернету.")
 
-
 def unregister():
     panel.unregister()
     compress_operator.unregister()
     properties.unregister()
+    batch_select_operator.unregister()
 
-    if hasattr(bpy.types.WindowManager, "bc_conflicts"):
-        del bpy.types.WindowManager.bc_conflicts
+    del bpy.types.WindowManager.bc_conflicts
+    del bpy.types.WindowManager.bc_skip_conflict_dialog
+
+    if hasattr(bpy.types.Scene, "use_batch_selection"):
+        del bpy.types.Scene.use_batch_selection
